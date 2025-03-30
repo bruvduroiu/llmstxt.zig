@@ -1,170 +1,211 @@
 const std = @import("std");
 const ts = @import("tree-sitter");
 const Allocator = std.mem.Allocator;
-const MultiArrayList = std.MultiArrayList;
-const definitions = @import("definitions.zig");
-const Definition = definitions.Definition;
-const Function = definitions.Function;
+const ArrayList = std.ArrayList;
+const StringHashMap = std.StringHashMap;
 
-const Self = @This();
-parser: *ts.Parser,
-language_name: []const u8,
-source: []const u8,
-allocator: Allocator,
+const defs = @import("definitions.zig");
+const Definition = defs.Definition;
+const Function = defs.Function;
+const Property = defs.Property;
+const ClassProperty = defs.ClassProperty;
+const Method = defs.Method;
+const Class = defs.Class;
+const DefinitionList = defs.DefinitionList;
 
-pub fn create(allocator: Allocator, file_path: []const u8) !*Self {
-    const ext = std.fs.path.extension(file_path);
+const lang = @import("language.zig");
+const LanguageType = lang.LanguageType;
 
-    var parser = ts.Parser.create();
-    errdefer parser.destroy();
+pub const CodeParser = struct {
+    const Self = @This();
+    parser: *ts.Parser,
+    language_type: LanguageType,
+    allocator: Allocator,
+    source: []const u8,
 
-    const language = try getLanguageForExtension(ext);
-    try parser.setLanguage(language);
+    // Maps to track class definitions for later reference
+    class_map: StringHashMap(*Class),
 
-    const source = try std.fs.cwd().readFileAlloc(allocator, file_path, 1024 * 1024 * 10); // 10MB max
-    errdefer allocator.free(source);
+    pub fn create(allocator: Allocator, file_path: []const u8, source: []const u8) !*Self {
+        // Determine language from file extension
+        const ext = std.fs.path.extension(file_path);
+        const language_type = LanguageType.fromExtension(ext);
 
-    const p = try allocator.create(Self);
-    p.* = .{
-        .parser = parser,
-        .source = source,
-        .allocator = allocator,
-        .language_name = "python",
-    };
-    return p;
-}
+        // Get the tree-sitter language
+        const language = language_type.getLanguage() orelse return error.UnsupportedLanguage;
 
-pub fn destroy(self: *Self) void {
-    self.parser.destroy();
-    self.allocator.free(self.source);
-    self.allocator.destroy(self);
-}
+        // Create and configure the parser
+        var parser = ts.Parser.create();
+        errdefer parser.destroy();
+        try parser.setLanguage(language);
 
-pub fn extractDefinitions(self: *Self) !MultiArrayList(Definition) {
-    var defs = MultiArrayList(Definition){};
-    defer defs.deinit(self.allocator);
+        // Create the parser instance
+        const p = try allocator.create(Self);
+        errdefer allocator.destroy(p);
 
-    // Parse the source code
-    const tree = self.parser.parseString(self.source, null);
-    if (tree == null) {
-        return error.ParseFailed;
+        p.* = .{
+            .parser = parser,
+            .language_type = language_type,
+            .allocator = allocator,
+            .source = source,
+            .class_map = StringHashMap(*Class).init(allocator),
+        };
+
+        return p;
     }
-    defer tree.?.destroy();
 
-    const root_node = tree.?.rootNode();
+    pub fn destroy(self: *Self) void {
+        // Free class map entries
+        var it = self.class_map.iterator();
+        while (it.next()) |entry| {
+            // Classes will be freed when the definitions list is freed
+            _ = entry;
+        }
+        self.class_map.deinit();
 
-    // Get the appropriate query for this language
-    const query_string = try getQueryForLanguage(self.language_name);
-    var error_offset: u32 = 0;
-    const query = try ts.Query.create(self.parser.getLanguage() orelse tree_sitter_python(), query_string, &error_offset);
-    defer query.destroy();
+        // Free the parser
+        self.parser.destroy();
 
-    // Execute the query
-    const cursor = ts.QueryCursor.create();
-    defer cursor.destroy();
-    cursor.exec(query, root_node);
+        // Free self
+        self.allocator.destroy(self);
+    }
 
-    while (cursor.nextMatch()) |match| {
-        for (match.captures) |capture| {
-            const capture_name = query.captureNameForId(capture.index) orelse "mock_caputer";
-            const node = capture.node;
-            const node_text = self.source[node.startByte()..node.endByte()];
-            const name = if (node.childByFieldName("name")) |name_node|
-                self.source[name_node.startByte()..name_node.endByte()]
-            else
-                node_text;
+    pub fn extractDefinitions(self: *Self) !DefinitionList {
+        var definitions = DefinitionList.init(self.allocator);
+        errdefer definitions.deinit();
 
-            if (std.mem.eql(u8, capture_name, "function")) {
-                var func_def = try Function.init(self.allocator, name, "", "", "", "");
-                try defs.append(self.allocator, func_def);
-                defer func_def.destroy();
+        // Parse the source code
+        const tree = self.parser.parseString(self.source, null);
+        if (tree == null) {
+            return error.ParseFailed;
+        }
+        defer tree.?.destroy();
+
+        const root_node = tree.?.rootNode();
+
+        // Get the appropriate query for this language
+        const query_string = self.language_type.getQuery() orelse return error.QueryNotFound;
+        var error_offset: u32 = 0;
+        const query = try ts.Query.create(self.parser.getLanguage() orelse return error.LanguageNotSet, query_string, &error_offset);
+        defer query.destroy();
+
+        // Execute the query
+        const cursor = ts.QueryCursor.create();
+        defer cursor.destroy();
+        cursor.exec(query, root_node);
+
+        // Track captured nodes to avoid duplicates
+        var captured_nodes = std.AutoHashMap(ts.Node, void).init(self.allocator);
+        defer captured_nodes.deinit();
+
+        while (cursor.nextMatch()) |match| {
+            for (match.captures) |capture| {
+                const capture_name = query.captureNameForId(capture.index) orelse continue;
+                const node = capture.node;
+
+                // Skip if we've already processed this node
+                if (captured_nodes.contains(node)) continue;
+                try captured_nodes.put(node, {});
+
+                // Extract node text and name
+                const node_text = self.source[node.startByte()..node.endByte()];
+                const name = if (node.childByFieldName("name")) |name_node|
+                    self.source[name_node.startByte()..name_node.endByte()]
+                else
+                    node_text;
+
+                // Extract documentation if available
+                const doc = self.extractDocumentation(node);
+
+                try self.processCapture(capture_name, node, name, doc, &definitions);
             }
+        }
+
+        return definitions;
+    }
+
+    fn extractDocumentation(self: *Self, node: ts.Node) ?[]const u8 {
+        // Look for docstrings in various formats depending on language
+        // This is a simplified implementation
+        if (self.language_type == .python) {
+            // For Python, look for a string as the first child of a function/class body
+            if (node.childByFieldName("body")) |body| {
+                if (body.namedChild(0)) |first_child| {
+                    if (std.mem.eql(u8, first_child.kind(), "string")) {
+                        return self.source[first_child.startByte()..first_child.endByte()];
+                    }
+                }
+            }
+        }
+
+        return null;
+    }
+
+    fn processCapture(self: *Self, capture_name: []const u8, node: ts.Node, name: []const u8, doc: ?[]const u8, definitions: *DefinitionList) !void {
+        if (std.mem.eql(u8, capture_name, "function")) {
+            const func = try Function.init(self.allocator, name, doc);
+            try definitions.append(.{ .function = func });
+        } else if (std.mem.eql(u8, capture_name, "class")) {
+            const class = try Class.init(self.allocator, name, doc);
+            try self.class_map.put(name, class);
+            try definitions.append(.{ .class = class });
+        } else if (std.mem.eql(u8, capture_name, "method")) {
+            // Find the parent class
+            const class_name = self.findParentClassName(node);
+            if (class_name) |cn| {
+                const method = try Method.init(self.allocator, name, cn, doc);
+
+                // Add to class if we have it
+                if (self.class_map.get(cn)) |class| {
+                    try class.addMethod(method);
+                } else {
+                    // Otherwise add as standalone method
+                    try definitions.append(.{ .method = method });
+                }
+            } else {
+                // If we can't find a parent class, treat it as a function
+                const func = try Function.init(self.allocator, name, doc);
+                try definitions.append(.{ .function = func });
+            }
+        } else if (std.mem.eql(u8, capture_name, "class_assignment") or
+            std.mem.eql(u8, capture_name, "class_variable"))
+        {
+            // Find the parent class
+            const class_name = self.findParentClassName(node);
+            if (class_name) |cn| {
+                const prop = try ClassProperty.init(self.allocator, name, cn, doc);
+
+                // Add to class if we have it
+                if (self.class_map.get(cn)) |class| {
+                    try class.addProperty(prop);
+                } else {
+                    // Otherwise add as standalone property
+                    try definitions.append(.{ .class_property = prop });
+                }
+            } else {
+                // If we can't find a parent class, treat it as a regular property
+                const prop = try Property.init(self.allocator, name, doc);
+                try definitions.append(.{ .property = prop });
+            }
+        } else if (std.mem.eql(u8, capture_name, "assignment")) {
+            const prop = try Property.init(self.allocator, name, doc);
+            try definitions.append(.{ .property = prop });
+        } else if (std.mem.eql(u8, capture_name, "docstring")) {
+            // Handle docstrings - already processed in extractDocumentation
         }
     }
 
-    for (defs) |def| {
-        try def.print(std.debug);
+    fn findParentClassName(self: *Self, node: ts.Node) ?[]const u8 {
+        var current = node.parent();
+        while (current) |parent| {
+            if (std.mem.eql(u8, parent.kind(), "class_definition")) {
+                if (parent.childByFieldName("name")) |name_node| {
+                    return self.source[name_node.startByte()..name_node.endByte()];
+                }
+                return null;
+            }
+            current = parent.parent();
+        }
+        return null;
     }
-    return defs;
-}
-
-// Helper
-
-fn getLanguageForExtension(ext: []const u8) !*ts.Language {
-    if (std.mem.eql(u8, ext, ".zig")) {
-        return tree_sitter_zig();
-    } else if (std.mem.eql(u8, ext, ".c") or std.mem.eql(u8, ext, ".h")) {
-        return tree_sitter_c();
-    } else if (std.mem.eql(u8, ext, ".py")) {
-        return tree_sitter_python();
-    } else {
-        return error.UnsupportedLanguage;
-    }
-}
-
-fn getQueryForLanguage(language_name: []const u8) ![]const u8 {
-    // In a real implementation, this would load queries from files
-    if (std.mem.eql(u8, language_name, "python")) {
-        return 
-        \\;; Capture top-level functions, class, and method definitions
-        \\(module
-        \\  (expression_statement
-        \\    (assignment) @assignment
-        \\  )
-        \\)
-        \\(module
-        \\  (function_definition) @function
-        \\)
-        \\(module
-        \\  (decorated_definition
-        \\    definition: (function_definition) @function
-        \\  )
-        \\)
-        \\(module
-        \\  (class_definition
-        \\    body: (block
-        \\      (expression_statement
-        \\        (assignment) @class_assignment
-        \\      )
-        \\    )
-        \\  ) @class
-        \\)
-        \\(module
-        \\  (class_definition
-        \\    body: (block
-        \\      (function_definition) @method
-        \\    )
-        \\  ) @class
-        \\)
-        \\(module
-        \\  (class_definition
-        \\    body: (block
-        \\      (expression_statement 
-        \\        (string) @docstring
-        \\      )
-        \\    )
-        \\  ) @class
-        \\)
-        \\(module
-        \\  (class_definition
-        \\    body: (block
-        \\      (decorated_definition
-        \\        definition: (function_definition) @method
-        \\      )
-        \\    )
-        \\  ) @class
-        \\)
-        ;
-    } else {
-        return 
-        \\(function_definition name: (identifier) @function)
-        \\(class_definition name: (identifier) @class)
-        \\(method_definition name: (identifier) @method)
-        ;
-    }
-}
-
-// External C functions for tree-sitter languages
-extern fn tree_sitter_zig() callconv(.C) *ts.Language;
-extern fn tree_sitter_c() callconv(.C) *ts.Language;
-extern fn tree_sitter_python() callconv(.C) *ts.Language;
+};
