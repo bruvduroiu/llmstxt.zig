@@ -5,11 +5,13 @@ const Allocator = std.mem.Allocator;
 extern fn tree_sitter_zig() callconv(.C) *ts.Language;
 extern fn tree_sitter_c() callconv(.C) *ts.Language;
 extern fn tree_sitter_python() callconv(.C) *ts.Language;
+extern fn tree_sitter_go() callconv(.C) *ts.Language;
 
 pub const LanguageType = enum {
     python,
     zig,
     c,
+    go,
     unknown,
 
     pub fn fromExtension(ext: []const u8) LanguageType {
@@ -19,6 +21,8 @@ pub const LanguageType = enum {
             return .zig;
         } else if (std.mem.eql(u8, ext, ".c") or std.mem.eql(u8, ext, ".h")) {
             return .c;
+        } else if (std.mem.eql(u8, ext, ".go")) {
+            return .go;
         } else {
             return .unknown;
         }
@@ -29,6 +33,7 @@ pub const LanguageType = enum {
             .python => "python",
             .zig => "zig",
             .c => "c",
+            .go => "go",
             .unknown => "unknown",
         };
     }
@@ -38,6 +43,7 @@ pub const LanguageType = enum {
             .python => tree_sitter_python(),
             .zig => tree_sitter_zig(),
             .c => tree_sitter_c(),
+            .go => tree_sitter_go(),
             .unknown => null,
         };
     }
@@ -131,6 +137,38 @@ pub const LanguageType = enum {
             \\(declaration
             \\  (storage_class_specifier) @extern
             \\) @variable
+            ,
+            .go =>
+            \\;; Capture top-level functions and struct definitions
+            \\(source_file
+            \\  (var_declaration
+            \\    (var_spec) @variable
+            \\  )
+            \\)
+            \\(source_file
+            \\  (const_declaration
+            \\    (const_spec) @variable
+            \\  )
+            \\)
+            \\(source_file
+            \\  (function_declaration) @function
+            \\)
+            \\(source_file
+            \\  (type_declaration
+            \\    (type_spec (struct_type)) @class
+            \\  )
+            \\)
+            \\(source_file
+            \\  (type_declaration
+            \\    (type_spec
+            \\      (struct_type
+            \\        (field_declaration_list
+            \\          (field_declaration) @class_variable)))
+            \\  )
+            \\)
+            \\(source_file
+            \\  (method_declaration) @method
+            \\)
             ,
             .unknown => null,
         };

@@ -80,7 +80,7 @@ pub fn build(b: *std.Build) void {
     exe.linkLibrary(tree_sitter.artifact("zig-tree-sitter"));
 
     // Build language level packages
-    const supported_langs: [3][]const u8 = .{ "c", "python", "zig" };
+    const supported_langs: [4][]const u8 = .{ "c", "python", "zig", "go" };
     const prefix = "tree-sitter-";
     inline for (supported_langs) |lang| {
         const name = comptime blk: {
