@@ -27,10 +27,8 @@
       })
     ];
 
-    # Our supported systems are the same supported systems as the Zig binaries
-    systems = builtins.attrNames inputs.zig.packages;
   in 
-    flake-utils.lib.eachSystem systems (
+    flake-utils.lib.eachDefaultSystem (
       system: let
         pkgs = import nixpkgs { inherit overlays system; };
       in rec {
@@ -40,11 +38,7 @@
           ];
         };
 
-        devShell = self.devShells.${system}.default;
-
-        packages.llmstxt-zig = pkgs.llmstxt-zig;
-        packages.default = packages.llmstxt-zig;
-        defaultPackage = packages.llmstxt-zig;
+        packages.default = pkgs.llmstxt-zig;
       }
     );
 }
