@@ -1,0 +1,74 @@
+name: Release
+
+on:
+  release:
+    types: [ published ]
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        os: [ubuntu-latest]
+        arch: [ aarch64 x86_64 ]
+        target: [
+          linux-gnu,
+          linux-musl,
+          macos,
+          windows-gnu
+        ]
+    runs-on: ${{ matrix.os }}
+    env:
+      ZIG_LOCAL_CACHE_DIR: /zig/local-cache
+      ZIG_GLOBAL_CACHE_DIR: /zig/global-cache
+    steps:
+    - name: Checkout code
+      uses: actions/checkou@v4
+
+    - name: Setup cache 
+      uses: namespacelabs/nscloud-cache-action@v1.2.12
+      with:
+        path: |
+          /nix
+          /zig
+
+    # Install Nix and use that to run our tests so our environment matches exactly.
+    - uses: cachix/install-nix-action@v31
+      with:
+        nix_path: nixpkgs=channel:nixos-unstable
+
+    - run: nix flake check
+
+    - name: test
+      run: nix develop -c zig build --summary all -Dtarget=${{ matrix.arch }}-${{ matrix.target }}
+
+    - name: Build
+      run: nix build .#llmstxt-zig
+
+    - name: Prepare release artifacts
+      if: github.event_name == 'release'
+      run: |
+        mkdir -p release-artifacts
+        # Copy the built library and executable
+        cp -r result/bin/* release-artifacts/ 2>/dev/null || true
+        cp -r result/lib/* release-artifacts/ 2>/dev/null || true
+        cp -r result/include/* release-artifacts/ 2>/dev/null || true
+        
+        # Create platform-specific archive
+        OS_NAME="${{ matrix.os }}"
+        ARCH="${{ matrix.arch }}"
+        tar -czf llmstxt-zig-${ARCH}-${OS_NAME}.tar.gz -C release-artifacts .
+    
+    - name: Upload release artifacts
+      if: github.event_name == 'release'
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{ github.event.release.upload_url }}
+        asset_path: ./llmstxt-zig-*-${{ runner.os == 'macOS' && 'macos' || 'linux' }}.tar.gz
+        asset_name: llmstxt-zig-${{ runner.arch }}-${{ runner.os == 'macOS' && 'macos' || 'linux' }}.tar.gz
+        asset_content_type: application/gzip
