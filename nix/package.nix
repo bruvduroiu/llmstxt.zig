@@ -72,7 +72,7 @@ stdenv.mkDerivation rec {
   meta = with lib; {
     description = "A light, AI-first codebase processor.";
     homepage = "https://github.com/bruvduroiu/llmstxt.zig";
-    license = licenses.lgpl2;
+    license = licenses.mit;
     platforms = [ "x86_64-linux" "aarch64-linux" "x86_64-darwin" "aarch64-darwin" ];
   };
 }
