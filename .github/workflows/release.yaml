@@ -39,7 +39,6 @@ jobs:
       uses: softprops/action-gh-release@v2
       if: github.ref_type == 'tag'
       with:
-        body_path: ${{ github.workspace }}-CHANGELOG.txt
         repository: bruvduroiu/llmstxt.zig
         files: |
           result/bin/llmstxt_zig
