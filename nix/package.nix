@@ -2,40 +2,17 @@
 , lib
 , zig
 , pkg-config
+, system
 , fetchFromGitHub
+, packageDir
 }:
 
 let
-  mkTreeSitterGrammar = { name, owner, repo, rev, sha256 }: stdenv.mkDerivation {
-    pname = name;
-    version = rev;
-    
-    src = fetchFromGitHub {
-      inherit owner repo rev sha256;
-    };
-    
-    buildPhase = ''
-      # Build the grammar if needed
-    '';
-    
-    installPhase = ''
-      mkdir -p $out
-      cp -r . $out/
-    '';
-  };
-in
-
+  target = builtins.replaceStrings ["darwin"] ["macos"] system;
+in 
 stdenv.mkDerivation rec {
   pname = "llmstxt.zig";
   version = "0.1.0";
-
-  tree-sitter-grammar = mkTreeSitterGrammar {
-    name = "zig-tree-sitter";
-    owner = "bruvduroiu";
-    repo = "zig-tree-sitter";
-    rev = "master";
-    sha256 = "sha256-Vuj05lvhVeHfjEy7hJYbHKew7v9dLYY/c7/UsJ31vIQ=";
-  };
 
   tree-sitter-c-src = fetchFromGitHub {
     name = "tree-sitter-c";
@@ -71,25 +48,22 @@ stdenv.mkDerivation rec {
 
   src = ./..;
   nativeBuildInputs = [ zig pkg-config ];
-  buildInputs = [ tree-sitter-grammar ];
 
   buildPhase = ''
     # Necessary for zig cache to work
     export HOME=$TMPDIR
 
     mkdir -p vendor
-    ln -sf ${tree-sitter-grammar} vendor/tree-sitter
     ln -sf ${tree-sitter-c-src} vendor/tree-sitter-c
     ln -sf ${tree-sitter-python-src} vendor/tree-sitter-python
     ln -sf ${tree-sitter-go-src} vendor/tree-sitter-go
     ln -sf ${tree-sitter-zig-src} vendor/tree-sitter-zig
-
-    zig build --global-cache-dir $(pwd)/.cache -Doptimize=ReleaseFast --prefix $out install
   '';
 
   installPhase = ''
     runHook preInstall
-    cp -r zig-out/* $out/
+    PACKAGE_DIR=${packageDir}
+    zig build --global-cache-dir $(pwd)/.cache --system $PACKAGE_DIR -Doptimize=ReleaseSafe -Dtarget=${target} --prefix $out install
     runHook postInstall
   '';
 

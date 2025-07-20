@@ -21,7 +21,9 @@
         zig = inputs.zig.packages.${prev.system}."0.14.1";
 
         # Our package
-        llmstxt-zig = prev.callPackage ./nix/package.nix {};
+        llmstxt-zig = prev.callPackage ./nix/package.nix {
+          packageDir = prev.callPackage ./deps.nix {};
+        };
       })
     ];
 
