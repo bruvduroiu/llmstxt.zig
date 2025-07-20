@@ -15,6 +15,12 @@ cd llmstxt.zig/
 zig build
 ```
 
+or via nix:
+
+```
+nix build
+```
+
 ## Usage
 
 ```
