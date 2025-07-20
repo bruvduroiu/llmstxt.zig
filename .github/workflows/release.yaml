@@ -23,13 +23,6 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v4
 
-    - name: Setup cache 
-      uses: namespacelabs/nscloud-cache-action@v1.2.12
-      with:
-        path: |
-          /nix
-          /zig
-
     # Install Nix and use that to run our tests so our environment matches exactly.
     - uses: cachix/install-nix-action@v31
       with:
